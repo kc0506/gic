@@ -406,8 +406,12 @@ class Estimator(torch.nn.Module):
 
     @ti.func
     def compute_distance(self, p1, p2):
-        d = ti.math.distance(p1, p2)
-        return d
+        # eps-safe norm: ti.math.distance's autodiff is (p1-p2)/d, which is
+        # 0/0 = NaN for bit-exact pairs REGARDLESS of upstream gradient
+        # (NaN*0=NaN). sqrt(|diff|^2 + 1e-16) caps d at 1e-8 and gives the
+        # correct zero gradient at coincident points. (2026-06-11 NaN fix.)
+        diff = p1 - p2
+        return ti.sqrt(diff.dot(diff) + 1e-16)
 
     @ti.kernel
     def update_match_indices_gt2sim(self, f:ti.i32, local_index:ti.i32):
@@ -450,11 +454,15 @@ class Estimator(torch.nn.Module):
             index_ = self.match_indices_gt2sim[f, i]
             d = self.compute_distance(self.simulator.x[index_, local_index], self.gt[f, i])
 
-            if self.stage[None] == self.velocity_stage:
-                self.loss[None] += d / self.num_particles_surface[f]
-            else:
-                # physical params stage
-                self.loss[None] += d*self.w_geo[None] / self.gt2sim_err_cnt[f] if self.gt[f, i].y > self.voxel_size else 0.0
+            # d == 0 (bit-exact pair) contributes nothing to the loss, but its
+            # autodiff gradient is (a-b)/d = 0/0 = NaN; guard keeps the correct
+            # zero subgradient. (NaN root cause found 2026-06-11.)
+            if d > 0:
+                if self.stage[None] == self.velocity_stage:
+                    self.loss[None] += d / self.num_particles_surface[f]
+                else:
+                    # physical params stage
+                    self.loss[None] += d*self.w_geo[None] / self.gt2sim_err_cnt[f] if self.gt[f, i].y > self.voxel_size else 0.0
 
 
     @ti.kernel
@@ -468,11 +476,13 @@ class Estimator(torch.nn.Module):
             index_ = self.match_indices_sim2gt[f, i]
             x = self.simulator.x[self.sim_surface_index[f, i], local_index]
             d = self.compute_distance(x, self.gt[f, index_])
-            if self.stage[None] == self.velocity_stage:
-                self.loss[None] += d / self.sim_surface_cnt[f]
-            else:
-                # physical params stage
-                self.loss[None] += d*self.w_geo[None] / self.sim2gt_err_cnt[f] if self.gt[f, index_].y > self.voxel_size and x.y > self.voxel_size else 0.0
+            # see compute_loss_gt2sim: zero-distance pairs must not emit NaN grads
+            if d > 0:
+                if self.stage[None] == self.velocity_stage:
+                    self.loss[None] += d / self.sim_surface_cnt[f]
+                else:
+                    # physical params stage
+                    self.loss[None] += d*self.w_geo[None] / self.sim2gt_err_cnt[f] if self.gt[f, index_].y > self.voxel_size and x.y > self.voxel_size else 0.0
 
     def get_surface(self, f):
         surface = np.full((self.num_particles[None], 3), [0, 255, 0], dtype=np.uint8)
