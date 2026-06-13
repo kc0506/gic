@@ -16,11 +16,9 @@ Usage (gic env, gic repo root), e.g.:
   python loss_landscape.py --mode E1d --gt_traj .../warp_traj.npy --gt_traj_normalized \
       --gt_logE 4.0 --windows 8 14 --tag E1e4_windows
 """
-from roundtrip_ours_scene import (  # noqa: E402  (this import picks a GPU)
-    AnchoredEstimator,
-    load_our_scene,
-    set_params,
-)
+from ours.gpu import pick_gpu
+
+pick_gpu()  # pick a free GPU before torch/taichi create a CUDA context
 
 import json
 import math
@@ -33,6 +31,9 @@ import taichi as ti
 import torch
 
 from simulator import Estimator
+
+from ours.estimator import AnchoredEstimator
+from ours.scene import load_our_scene, set_params
 
 GEN = "/tmp2/b10401006/ev-project/generative-phys"
 OUT_ROOT = f"{GEN}/reports/20260612_gic_q2/landscape"

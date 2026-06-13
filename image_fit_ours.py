@@ -23,13 +23,10 @@ has structure to match.
 """
 
 # importing roundtrip_sim2sim picks a free GPU before torch/taichi touch CUDA
-from roundtrip_ours_scene import (
-    AnchoredEstimator,
-    load_our_scene,
-    set_params,
-    train_ours,
-)
-from roundtrip_sim2sim import rollout_collect_surfaces
+from ours.gpu import pick_gpu
+
+pick_gpu()  # pick a free GPU before torch/taichi create a CUDA context
+from ours.geom import rot_xyz as rot_z
 
 import json
 import math
@@ -48,6 +45,10 @@ from scene.gaussian_model import GaussianModel
 from simulator import Estimator
 from utils.general_utils import inverse_sigmoid
 
+from ours.estimator import AnchoredEstimator
+from ours.scene import load_our_scene, rollout_collect_surfaces, set_params
+from ours.train import train_ours
+
 GEN = "/tmp2/b10401006/ev-project/generative-phys"
 
 
@@ -60,17 +61,6 @@ class SceneShim:
 
     def getTrainCameras(self, scale: float = 1.0) -> list:
         return self._cams
-
-
-def rot_z(p: torch.Tensor, deg: float) -> torch.Tensor:
-    """Rotate (N,3) about z through (0.5, 0.5)."""
-    t = math.radians(deg)
-    c, s = math.cos(t), math.sin(t)
-    x, y = p[:, 0] - 0.5, p[:, 1] - 0.5
-    q = p.clone()
-    q[:, 0] = c * x - s * y + 0.5
-    q[:, 1] = s * x + c * y + 0.5
-    return q
 
 
 def build_pseudo_gaussians(xyz: torch.Tensor, pv: torch.Tensor,
@@ -265,7 +255,7 @@ def main() -> None:
                  if "x" in args.v0_field_res else (int(args.v0_field_res),) * 3)
     gt_part = None
     if args.gt_v0_variant is not None:
-        from v0_field_ours import V0VoxelField, fill_profile_grid
+        from ours.fields import V0VoxelField, fill_profile_grid
         gt_field = V0VoxelField(aabb.cpu(), res=field_res)
         fill_profile_grid(gt_field, args.gt_v0_variant, args.gt_v0_scale,
                           z_lo, z_hi, flip=flip_z)
@@ -359,7 +349,7 @@ def main() -> None:
         # decades while v0 is still ~0; (2) joint phase steps E (scheduled lr)
         # and v0 together; nu rides along frozen (lr 0).
         import torch.nn as nn
-        from roundtrip_ours_scene import save_overlay_gif
+        from ours.viz import save_overlay_gif
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
@@ -471,7 +461,7 @@ def main() -> None:
         # a given (direction, camera), the failure is loss identifiability, not
         # field parameterization. Same phys-stage trick, optimizer = init_vel.
         import torch.nn as nn
-        from roundtrip_ours_scene import save_overlay_gif
+        from ours.viz import save_overlay_gif
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
@@ -544,9 +534,9 @@ def main() -> None:
 
     if args.mode == "fit_v0field":
         # ---- fix-E, learn v0 FIELD from image loss ----
-        from v0_field_ours import V0VoxelField, eval_grid_at
-        from roundtrip_ours_scene import (plot_field_projections, plot_grid_nodes,
-                                          plot_profile_1d, save_overlay_gif)
+        from ours.fields import V0VoxelField, eval_grid_at
+        from ours.viz import (plot_field_projections, plot_grid_nodes,
+                              plot_profile_1d, save_overlay_gif)
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt

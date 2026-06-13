@@ -14,11 +14,11 @@ the E basin vs a single observation". (M1 = also learn per-obs v0.)
 Equal loss weighting (no per-obs normalization) for M0; per-obs final losses
 are reported so we can tell if normalization is needed for M1.
 """
-from roundtrip_ours_scene import (
-    AnchoredEstimator, forward_bounded, load_our_scene, save_overlay_gif, CFLExhausted,
-)
-from roundtrip_sim2sim import rollout_collect_surfaces, set_params
+from ours.gpu import pick_gpu
+
+pick_gpu()  # pick a free GPU before torch/taichi create a CUDA context
 from train_dynamic import backward as gic_backward
+from ours.geom import rot_xyz
 
 import json
 import math
@@ -33,19 +33,13 @@ import torch
 from simulator import Estimator
 from utils.system_utils import draw_curve
 
+from ours.estimator import AnchoredEstimator, CFLExhausted, forward_bounded
+from ours.scene import load_our_scene, rollout_collect_surfaces, set_params
+from ours.viz import save_overlay_gif
+
 GEN = "/tmp2/b10401006/ev-project/generative-phys"
 VDIR = {"xp": [0.5, 0.0, 0.0], "xm": [-0.5, 0.0, 0.0],
         "yp": [0.0, 0.5, 0.0], "ym": [0.0, -0.5, 0.0]}
-
-
-def rot_xyz(xyz: torch.Tensor, deg: float) -> torch.Tensor:
-    t = math.radians(deg)
-    c, s = math.cos(t), math.sin(t)
-    x, y = xyz[:, 0] - 0.5, xyz[:, 1] - 0.5
-    q = xyz.clone()
-    q[:, 0] = c * x - s * y + 0.5
-    q[:, 1] = s * x + c * y + 0.5
-    return q
 
 
 def main() -> None:

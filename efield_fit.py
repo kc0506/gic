@@ -13,12 +13,14 @@ error weighted by a real LOCAL-STRAIN proxy (neighbour-distance change) AND
 a scatter of recovered log10 E vs that strain, so the dead-zone is visible rather
 than averaged away.
 """
-from roundtrip_ours_scene import (
-    AnchoredEstimator, forward_bounded, load_our_scene, save_overlay_gif, CFLExhausted,
-)
-from roundtrip_sim2sim import rollout_collect_surfaces, set_params
+from ours.gpu import pick_gpu
+
+pick_gpu()  # pick a free GPU before torch/taichi create a CUDA context
+
 from train_dynamic import backward as gic_backward
-from v0_field_ours import EVoxelField, eval_Egrid_at
+from ours.geom import rot_xyz
+from ours.viz import plot_E_gt_vs_pred, plot_E_z_heatmap, save_overlay_gif
+from ours.fields import EVoxelField, eval_Egrid_at
 
 import json
 import math
@@ -31,17 +33,13 @@ import taichi as ti
 import torch
 
 from simulator import Estimator
+
+from ours.estimator import AnchoredEstimator, CFLExhausted, forward_bounded
+from ours.scene import load_our_scene, rollout_collect_surfaces, set_params
 from utils.system_utils import draw_curve
 
 GEN = "/tmp2/b10401006/ev-project/generative-phys"
 VDIR = {"xp": [0.5, 0, 0], "xm": [-0.5, 0, 0], "yp": [0, 0.5, 0], "ym": [0, -0.5, 0]}
-
-
-def rot_xyz(xyz, deg):
-    t = math.radians(deg); c, s = math.cos(t), math.sin(t)
-    x, y = xyz[:, 0] - 0.5, xyz[:, 1] - 0.5
-    q = xyz.clone(); q[:, 0] = c * x - s * y + 0.5; q[:, 1] = s * x + c * y + 0.5
-    return q
 
 
 def strain_proxy(x0: torch.Tensor, xT: torch.Tensor, k: int = 8) -> torch.Tensor:
@@ -297,7 +295,7 @@ def main() -> None:
     # rollout too, so both GT material AND GT initial-velocity are non-uniform.
     gt_v0_pf = None
     if args.gt_v0_variant is not None:
-        from v0_field_ours import V0VoxelField as _V0F, fill_profile_grid as _fillv0
+        from ours.fields import V0VoxelField as _V0F, fill_profile_grid as _fillv0
         gt_v0f = _V0F(aabb.cpu(), res=res)
         _fillv0(gt_v0f, args.gt_v0_variant, args.gt_v0_scale, z_lo, z_hi, flip_z)
         est.set_v0_field(gt_v0f, xyz, lr=0.0)
@@ -320,7 +318,7 @@ def main() -> None:
     # v0_field (rung-3, DOUBLE field): v0 is also a voxel field, not scalar.
     v0_field = None
     if args.v0_field:
-        from v0_field_ours import V0VoxelField, eval_grid_at as eval_v0grid
+        from ours.fields import V0VoxelField, eval_grid_at as eval_v0grid
         v0_field = V0VoxelField(aabb.cpu(), res=res)
         v0_field.randomize_(args.v0_field_init_std, seed=0)
         v0_field.freeze_starved_(xyz[free].cpu(), 1.0)
@@ -446,6 +444,7 @@ def main() -> None:
     result = {
         "scenario": "ours_efield_traj",
         "gt_kind": args.gt_kind, "gt_logE": args.gt_logE, "gt_ramp": args.gt_ramp,
+        "gt_v0_variant": args.gt_v0_variant, "gt_v0_scale": args.gt_v0_scale,
         "gt_nu": args.gt_nu, "init_logE": args.init_logE, "obs": args.obs, "v0": v0,
         "res": list(res), "n_starved": n_starved, "tv": args.tv,
         "logE_err_all": err_all, "logE_err_strain_w": err_w,
@@ -454,7 +453,10 @@ def main() -> None:
         "losses": loss_traj, "n_frames": args.n_frames,
         "joint_v0": args.joint_v0, "v0_field_mode": args.v0_field,
         "warmup_iters": args.warmup_iters if (args.joint_v0 or args.v0_field) else 0,
-        "v0_gt": v0, "v0_estimated": v0_est, "v0_rel_err": v0_rel,
+        "v0_gt": v0,  # NOMINAL scalar gt_vel — NOT the per-particle field amplitude
+        "v0_gt_field_norm_mean": (float(gt_v0_pf[fm].norm(dim=-1).mean())
+                                  if gt_v0_pf is not None else None),
+        "v0_estimated": v0_est, "v0_rel_err": v0_rel,
         "v0_field_relL2_xy": v0_field_relL2,
         "v0_traj": v0_traj if (args.joint_v0 or args.v0_field) else None,
         "wall_time_s": time.time() - t0,
@@ -490,17 +492,32 @@ def main() -> None:
                  f"err all {err_all:.3f} / observable-half {err_obs:.3f}", fontsize=9)
     ax.legend(fontsize=8); fig.tight_layout()
     fig.savefig(os.path.join(out_dir, "E_vs_strain.png")); plt.close(fig)
-    # profile along z (the key view for ramp)
+    # recovery quality, parametrization-free (ALL gt_kinds): recovered vs GT.
+    # Handles multi-valued (circular) fields that the 1D z-profile cannot.
+    plot_E_gt_vs_pred(gt_lp_free, lp_best,
+                      os.path.join(out_dir, "E_gt_vs_pred.png"),
+                      color=strain[fm], color_label="GT per-particle local strain",
+                      title=f"{args.tag}: recovered vs GT log10 E "
+                            f"(err all {err_all:.3f} / obs-half {err_obs:.3f})")
     zt = ((xyz_c[fm][:, 2] - z_lo) / (z_hi - z_lo + 1e-8)).clamp(0, 1)
     if flip_z:
         zt = 1.0 - zt
-    order = np.argsort(zt.numpy())
-    fig, ax = plt.subplots(figsize=(6.5, 4))
-    ax.scatter(zt.numpy(), lp_best.numpy(), s=4, alpha=0.3, label="recovered")
-    ax.plot(zt.numpy()[order], gt_lp_free.numpy()[order], "r", lw=1.5, label="GT")
-    ax.set_xlabel("zt (0=anchor end)"); ax.set_ylabel("log10 E")
-    ax.set_title(f"{args.tag}: E profile along cord"); ax.legend(fontsize=8)
-    fig.tight_layout(); fig.savefig(os.path.join(out_dir, "profile_1d.png")); plt.close(fig)
+    if args.gt_kind == "circular":
+        # z is MULTI-VALUED for circular (two strands at the same z carry
+        # different E) -> a 1D z-profile is meaningless. Use a (z, logE)
+        # GT-density heatmap (background) with recovered points (foreground).
+        plot_E_z_heatmap(zt, gt_lp_free, lp_best,
+                         os.path.join(out_dir, "E_z_heatmap.png"),
+                         title=f"{args.tag}: GT (z, logE) density + recovered points")
+    else:
+        # profile along z: the key view for ramp/uniform (E single-valued in z)
+        order = np.argsort(zt.numpy())
+        fig, ax = plt.subplots(figsize=(6.5, 4))
+        ax.scatter(zt.numpy(), lp_best.numpy(), s=4, alpha=0.3, label="recovered")
+        ax.plot(zt.numpy()[order], gt_lp_free.numpy()[order], "r", lw=1.5, label="GT")
+        ax.set_xlabel("zt (0=anchor end)"); ax.set_ylabel("log10 E")
+        ax.set_title(f"{args.tag}: E profile along cord"); ax.legend(fontsize=8)
+        fig.tight_layout(); fig.savefig(os.path.join(out_dir, "profile_1d.png")); plt.close(fig)
 
     # field projections + grid-node views (the v0-field viz suite, E-scalar)
     plot_E_projections(xyz_c[fm], lp_best, gt_lp_free,

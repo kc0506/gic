@@ -23,8 +23,9 @@ Usage (gic env, gic root):
   python preview_v0_fields.py --scene_cache ... --no_anchor --out_root .../v0_preview_free
 """
 
-from roundtrip_ours_scene import AnchoredEstimator, load_our_scene, save_overlay_gif
-from roundtrip_sim2sim import rollout_collect_surfaces, set_params
+from ours.gpu import pick_gpu
+
+pick_gpu()  # pick a free GPU before torch/taichi create a CUDA context
 
 import json
 import math
@@ -37,7 +38,11 @@ import torch
 import torch.nn as nn
 
 from simulator import Estimator
-from v0_field_ours import variant_field
+
+from ours.estimator import AnchoredEstimator
+from ours.scene import load_our_scene, rollout_collect_surfaces, set_params
+from ours.viz import save_overlay_gif
+from ours.fields import variant_field
 
 VARIANTS = ("ramp_y", "mid_kick", "true_bend", "twist_xy")
 
