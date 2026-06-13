@@ -1,0 +1,33 @@
+name: gic
+channels:
+  - pytorch
+  - nvidia/label/cuda-12.1.1
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.9
+  - pytorch=2.4.0
+  - pytorch-cuda=12.1
+  - torchvision=0.19.0
+  - torchaudio=2.4.0
+  - cuda-nvcc=12.1
+  - cuda-cudart-dev=12.1
+  - cuda-libraries-dev=12.1
+  - cuda-version=12.1
+  - gxx_linux-64=11
+  - gcc_linux-64=11
+  - ninja
+  - pip:
+      - dearpygui==1.10.1
+      - imageio==2.33.1
+      - imageio-ffmpeg==0.4.9
+      - lpips==0.1.4
+      - mmcv==2.1.0
+      - open3d==0.18.0
+      - opencv-python==4.9.0.80
+      - plyfile==1.0.3
+      - scipy==1.12.0
+      - taichi==1.2.0
+      - tqdm==4.66.1
+      - trimesh==4.1.0
+      - einops==0.7.0
