@@ -58,7 +58,10 @@ def render_static_cols(run_dir: str, tag: str) -> list:
     just collect those PNGs instead of re-rendering.
     """
     r = json.load(open(os.path.join(run_dir, "result.json")))
-    if "efield" in r.get("scenario", ""):  # script already saved all figures
+    scen = r.get("scenario", "")
+    # traj grid runs (efield / joint) pre-save all figures; image runs (incl
+    # ours_image_joint_v0E) go through the generic curve path below.
+    if ("efield" in scen or "joint" in scen) and "image" not in scen:
         from PIL import Image
         return [Image.open(os.path.join(run_dir, f)).convert("RGB")
                 for f in PRESAVED_STATICS if os.path.exists(os.path.join(run_dir, f))]
@@ -201,7 +204,10 @@ def resize_h(im: Image.Image, h: int) -> Image.Image:
 def build_row(run_dir: str) -> tuple:
     """Return (anim_frames: list[PIL], static_strip: PIL) for one run."""
     tag = os.path.basename(os.path.normpath(run_dir))
-    ov = os.path.join(run_dir, "overlay.gif")
+    # image runs: the rendered gt|pred|diff is the meaningful animation; fall back
+    # to the 3D-points overlay (traj runs).
+    gpd = os.path.join(run_dir, "gt_pred_diff.gif")
+    ov = gpd if os.path.exists(gpd) else os.path.join(run_dir, "overlay.gif")
     anim = [resize_h(f, ROW_H) for f in gif_frames(ov)] if os.path.exists(ov) else []
     statics = [resize_h(im, ROW_H) for im in render_static_cols(run_dir, tag)]
     sw = sum(im.width for im in statics)

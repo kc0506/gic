@@ -522,12 +522,24 @@ class Estimator(torch.nn.Module):
         gaussians = self.scene.gaussians
         views = self.views[f]
         background = torch.tensor([0, 0, 0], dtype=torch.float32, device="cuda")
-        d_xyz = xyz - gaussians.get_xyz
+        bg_image = getattr(self, "bg_image", None)  # fit_image_* with-bg mode: static bg
+        drive = getattr(self, "gauss_drive", None)  # fit_image_* full-res render
+        if drive is not None:
+            # full-res PhysDreamer render: object gaussians follow the particles via
+            # top_k interpolation (position differentiable -> grad to particles), bg
+            # static. anisotropic covariance needs compute_cov3D_python.
+            d_xyz, rot_full = drive(xyz - self.particle_xyz0)
+            gaussians._rotation = rot_full              # appearance only (detached)
+            self.pipeline.compute_cov3D_python = True
+        else:
+            d_xyz = xyz - gaussians.get_xyz
         loss_img = torch.tensor(0.0, device=self.device)
         loss_alp = torch.tensor(0.0, device=self.device)
         for view in views:
             results = render(view, gaussians, self.pipeline, background, d_xyz, 0.0, 0.0, False)
             image, alpha = results["render"], results["alpha"]
+            if bg_image is not None:  # composite pred over the same bg the GT used
+                image = image + (1.0 - alpha) * bg_image
             gt_image = view.original_image.cuda()
             gt_alpha_mask = view.gt_alpha_mask
             # crop image loss
