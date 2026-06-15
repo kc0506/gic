@@ -133,6 +133,8 @@ def variant_field(name: str, zt: Tensor) -> Tensor:
         v[:, 0] = -0.5 * zt
     elif name == "mid_kick":
         v[:, 1] = -0.5 * torch.exp(-(((zt - 0.525) / 0.12) ** 2))
+    elif name == "mid_kick_x":
+        v[:, 0] = 0.5 * torch.exp(-(((zt - 0.525) / 0.12) ** 2))   # +x peak mid-height, decays up/down
     elif name == "true_bend":
         v[:, 1] = (0.5 * torch.exp(-(((zt - 0.475) / 0.15) ** 2))
                    - 0.5 * torch.exp(-(((zt - 1.0) / 0.18) ** 2)))
@@ -214,6 +216,22 @@ class EVoxelField(nn.Module):
         if flip:
             zt = 1.0 - zt
         vals = lo_logE + (hi_logE - lo_logE) * zt                  # (rz,)
+        with torch.no_grad():
+            self.grid.copy_(vals.view(1, 1, rz, 1, 1).expand(1, 1, rz, ry, rx))
+
+    def fill_step_(self, soft_logE: float, stiff_logE: float,
+                   z_lo: float, z_hi: float, flip: bool,
+                   thresh: float = 0.67, width: float = 0.05) -> None:
+        """Sharp z-step log10 E: stiff at the anchor end (zt<thresh), soft at the tip
+        (zt>thresh) with a sigmoid transition of scale `width`. carnation: stiff stem
+        (lower 2/3) -> soft petals (upper 1/3), near-discontinuous but continuous."""
+        rx, ry, rz = self.res_xyz
+        nodes_z = torch.linspace(float(self.aabb[0][2]), float(self.aabb[1][2]), rz)
+        zt = ((nodes_z - z_lo) / (z_hi - z_lo + 1e-8)).clamp(0.0, 1.0)
+        if flip:
+            zt = 1.0 - zt
+        frac = torch.sigmoid((zt - thresh) / width)                # 0 (stiff) low zt -> 1 (soft) high zt
+        vals = stiff_logE + (soft_logE - stiff_logE) * frac        # (rz,)
         with torch.no_grad():
             self.grid.copy_(vals.view(1, 1, rz, 1, 1).expand(1, 1, rz, ry, rx))
 

@@ -24,6 +24,11 @@ class SceneCfg:
     edge-on wall artifacts). -22.4 = 67.6-90 points the wall normal at -y, facing the
     camera. gic-self-sim roundtrips are rotation-invariant (GT+pred rotate together);
     only alignment to a warp-GT dump baked at 67.6 needs an explicit override."""
+    euler: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    """3-axis XYZ-extrinsic Euler rotation (deg) to align a skewed scene's principal
+    axes (e.g. carnation = (-3.8,-4.32,21.55)). When ANY component is nonzero this
+    OVERRIDES rot_z_deg (fullres path only: rotates positions + gaussian quaternions).
+    Settle it visually in a viewer (dump the ply) -- see probe_carnation_cam."""
     anchor_mass_scale: float = 1e4
     inject_pvol: bool = False
     """use the cache's per-particle points_vol instead of (dx/2)^3"""
@@ -102,7 +107,15 @@ class RenderCfg:
     bg/foreground; needs the cache's sim_mask + top_k_index. 'pseudo' = isotropic
     blob per MPM particle (lazy fallback / traj-only data: clean gradient, no texture)."""
     camera: str = "front"
-    """'front'|'side_x'|'diag45'; --render.cameras overrides with a CSV multi-view"""
+    """'front'|'side_x'|'diag45'|'elev45' preset, or 'lookat' to use the free
+    (cam_az,cam_el,cam_dist) viewpoint -- rotate the CAMERA around the fixed scene
+    (e.g. cam_az=45 to see a face that's edge-on to the front camera)."""
+    cam_az: float = 0.0
+    """lookat camera azimuth (deg); 0 = front (-y looking +y), 90 = +x side"""
+    cam_el: float = 0.0
+    """lookat camera elevation (deg); 0 = eye-level, >0 looks down"""
+    cam_dist: float = 1.5
+    """lookat camera distance from the scene centre (sim units)"""
     cameras: Optional[str] = None
     """CSV of views for multi-view supervision (e.g. 'front,side_x'); None=single"""
     fov: float = 0.14

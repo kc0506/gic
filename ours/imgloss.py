@@ -96,6 +96,38 @@ def build_pseudo_gaussians(xyz: torch.Tensor, pv: torch.Tensor, orig: GaussianMo
     return g, idx
 
 
+_SH_C0 = 0.28209479177387814  # SH band-0 coeff: rendered RGB = 0.5 + C0 * features_dc
+
+
+def build_synthetic_pseudo_gaussians(xyz: torch.Tensor, pv: torch.Tensor,
+                                     rgb: torch.Tensor) -> GaussianModel:
+    """Pseudo gaussians for a SYNTHETIC scene (no dataset_dir / original ply).
+
+    Same isotropic-blob-per-particle build as build_pseudo_gaussians, but the DC
+    colour is supplied directly (decoupled from a real PhysDreamer scan) so a
+    synthetic block can be rendered. A SPATIALLY VARYING rgb (e.g. by rest
+    position) is what makes a deformation visible in the image -- a uniform colour
+    only moves the silhouette, giving the image loss little to grip on.
+
+    xyz: (N,3) cuda normalized positions; pv: (N,) particle volumes; rgb: (N,3)
+    target colour per particle in [0,1].  Returns the GaussianModel.
+    """
+    g = GaussianModel(0)
+    n = xyz.shape[0]
+    g._xyz = xyz.detach().clone()
+    dc = (rgb.cuda() - 0.5) / _SH_C0                                 # (N,3) -> render to rgb
+    g._features_dc = dc.unsqueeze(1).contiguous()                   # (N,1,3)
+    g._features_rest = torch.zeros((n, 0, 3), device="cuda")
+    s = pv.cuda().clamp_min(1e-12) ** (1.0 / 3.0)                   # (N,)
+    g._scaling = torch.log(s).unsqueeze(1).repeat(1, 3)
+    rot = torch.zeros((n, 4), device="cuda")
+    rot[:, 0] = 1.0
+    g._rotation = rot
+    g._opacity = inverse_sigmoid(0.9 * torch.ones((n, 1), device="cuda"))
+    g.active_sh_degree = 0
+    return g
+
+
 def _rotz_quat(quats: torch.Tensor, deg: float) -> torch.Tensor:
     """Left-multiply each [w,x,y,z] quaternion by a rotation of `deg` about +z.
 
@@ -194,11 +226,22 @@ def make_pose(view: str = "front", pan: float = 0.0) -> tuple:
                           [1.0, 0.0, 0.0]])  # cam z (forward) = world +x
         C = np.array([-1.4, 0.5, 0.5])
     elif view == "diag45":
-        c45 = 1.0 / math.sqrt(2.0)           # looking along (+x+y)/sqrt2:
-        R_w2c = np.array([[c45, -c45, 0.0],  # BOTH x and y are partly in-plane
-                          [0.0, 0.0, -1.0],
-                          [c45, c45, 0.0]])
+        c45 = 1.0 / math.sqrt(2.0)           # AZIMUTHAL 45 (rotation about +z):
+        R_w2c = np.array([[c45, -c45, 0.0],  # forward=(+x+y)/sqrt2 (no z tilt);
+                          [0.0, 0.0, -1.0],   # x AND y both 0.71 in-plane but MIXED
+                          [c45, c45, 0.0]])   # in cam-right -> profile/amplitude entangled
         C = np.array([0.5 - 1.9 * c45, 0.5 - 1.9 * c45, 0.5])
+    elif view == "elev45":
+        # ELEVATION 45 (rotation of front about world +x): looks down-and-forward.
+        # cam-right stays +x (rotation axis) => the bend's spatial axis x is FULLY
+        # in-plane (horizontal); the y-bend motion projects 0.71 onto the vertical
+        # (mixed with z). A +y/-y bend is INVISIBLE to a front (+y-axis) view; this
+        # tilt makes the amplitude visible while keeping the x-profile resolved.
+        c45 = 1.0 / math.sqrt(2.0)
+        R_w2c = np.array([[1.0, 0.0, 0.0],     # right = world +x (full x-profile)
+                          [0.0, -c45, -c45],   # down  = (0,-1,-1)/sqrt2
+                          [0.0, c45, -c45]])   # forward = (0,+1,-1)/sqrt2 (down-front)
+        C = np.array([0.5, 0.5 - 1.9 * c45, 0.5 + 1.9 * c45])  # in front (-y) and above (+z)
     else:
         raise ValueError(view)
     if pan:
@@ -207,9 +250,67 @@ def make_pose(view: str = "front", pan: float = 0.0) -> tuple:
     return R_w2c.T, T  # gic Camera stores R as the transpose convention
 
 
+def lookat_pose(az_deg: float, el_deg: float, dist: float, pan: float = 0.0) -> tuple:
+    """Camera looking at the sim-space centre (0.5) from azimuth/elevation (deg).
+
+    Rotates the VIEWPOINT around the fixed scene (NOT the scene itself). az=0 -> camera
+    at -y looking +y ('front'); az sweeps the azimuth (90 -> looks along -x from the +x
+    side); el>0 raises the camera to look DOWN. w2c rows=(right,down,forward) with world
+    +z mapped to image-up (matches make_pose front: right=+x, down=-z)."""
+    O = np.full(3, 0.5)
+    az, el = math.radians(az_deg), math.radians(el_deg)
+    dirv = np.array([math.cos(el) * math.sin(az), -math.cos(el) * math.cos(az), math.sin(el)])
+    C = O + dist * dirv
+    fwd = O - C
+    fwd /= np.linalg.norm(fwd)
+    up = np.array([0.0, 0.0, 1.0]) if el_deg < 85 else np.array([0.0, 1.0, 0.0])
+    right = np.cross(fwd, up)
+    right /= np.linalg.norm(right)
+    down = np.cross(fwd, right)
+    R_w2c = np.stack([right, down, fwd])
+    if pan:
+        C = C + pan * R_w2c[0]
+    T = -R_w2c @ C
+    return R_w2c.T, T
+
+
 def make_camera(fid: int, image: torch.Tensor, alpha: np.ndarray,
-                fov: float = 0.30, view: str = "front", pan: float = 0.0) -> Camera:
-    R, T = make_pose(view, pan)
+                fov: float = 0.30, view: str = "front", pan: float = 0.0,
+                az: float = 0.0, el: float = 0.0, dist: float = 1.5) -> Camera:
+    """view in {front,side_x,diag45,elev45} = a fixed preset; view=='lookat' uses the
+    free (az,el,dist) viewpoint (rotate the camera around the scene, e.g. az=45)."""
+    R, T = lookat_pose(az, el, dist, pan) if view == "lookat" else make_pose(view, pan)
+    return Camera(colmap_id=0, R=R, T=T, FoVx=fov, FoVy=fov,
+                  image=image, gt_alpha_mask=alpha, image_name=f"f{fid:03d}",
+                  uid=fid, fid=fid)
+
+
+def oblique_pose(elev_deg: float, azim_deg: float, dist: float = 1.9,
+                 center: tuple = (0.5, 0.5, 0.5)) -> tuple:
+    """Parametrized camera: depression `elev_deg` above horizontal, azimuth `azim_deg`
+    about +z from the front (-y) side; looks at `center` from `dist` away.
+
+    Built from the viewing direction so the geometry is exact (no name-guessing):
+    a +y/-y bend is invisible to the front (+y-axis) view; raising elevation and
+    swinging azimuth both pull the y-motion into the image plane.  elev<90 required
+    (at 90 the world-down up-vector is degenerate).  Returns (R, T) for gic Camera.
+    """
+    th, ph = math.radians(elev_deg), math.radians(azim_deg)
+    horiz = np.array([math.sin(ph), -math.cos(ph), 0.0])        # R_z(ph) @ (0,-1,0)
+    cam_from_center = math.cos(th) * horiz + math.sin(th) * np.array([0.0, 0.0, 1.0])
+    forward = -cam_from_center                                  # camera -> center (optical axis)
+    world_down = np.array([0.0, 0.0, -1.0])
+    down = world_down - (world_down @ forward) * forward        # project into image plane
+    down /= np.linalg.norm(down)
+    right = np.cross(down, forward)                             # matches front: right = down x forward
+    R_w2c = np.stack([right, down, forward])
+    C = np.array(center) + dist * cam_from_center
+    return R_w2c.T, -R_w2c @ C
+
+
+def make_oblique_camera(fid: int, image: torch.Tensor, alpha: np.ndarray, fov: float,
+                        elev_deg: float, azim_deg: float, dist: float = 1.9) -> Camera:
+    R, T = oblique_pose(elev_deg, azim_deg, dist)
     return Camera(colmap_id=0, R=R, T=T, FoVx=fov, FoVy=fov,
                   image=image, gt_alpha_mask=alpha, image_name=f"f{fid:03d}",
                   uid=fid, fid=fid)
@@ -315,8 +416,19 @@ def setup_image_scene(scene: "SceneCfg", gt: "GTCfg", render_cfg: "RenderCfg",
         top_k_index = cache["disc"]["top_k_index"].cuda()
         drive = TopKDrive(gaussians.get_xyz.detach(), gaussians.get_rotation.detach(),
                           xyz.detach(), top_k_index, sim_mask)
+        if render_cfg.bg_image != "scene":
+            # object-only on fullres (bg_image None/black/white/path): drop the static
+            # bg/foreground gaussians so the OBJECT (real texture, top_k-driven) is the
+            # whole image, then optionally composite over a uniform colour (below). The
+            # intrinsic scene bg dilutes the moving-object gradient (object is a tiny
+            # fraction of the full scene) -> vanishing/misleading gradient that stalls
+            # the fit; object-only restores it.
+            op = gaussians._opacity.detach().clone()
+            op[~sim_mask] = inverse_sigmoid(torch.tensor(1e-6, device=op.device))
+            gaussians._opacity = op
         print(f"[img] FULL-RES gaussians: {gaussians.get_xyz.shape[0]} real splats, "
-              f"object={int(sim_mask.sum())} driven by top_{top_k_index.shape[1]} particles")
+              f"object={int(sim_mask.sum())} driven by top_{top_k_index.shape[1]} particles"
+              f"{' + intrinsic bg' if render_cfg.bg_image == 'scene' else f' (object-only, composite bg={render_cfg.bg_image or chr(39)+chr(39)})'}")
     else:
         gaussians, idx = build_pseudo_gaussians(xyz, pv, orig, oxyz)
         print(f"[img] pseudo gaussians: {xyz.shape[0]} blobs at particles, "
@@ -369,13 +481,28 @@ def setup_image_scene(scene: "SceneCfg", gt: "GTCfg", render_cfg: "RenderCfg",
             )[0].cuda()
         print(f"[img] bg mode: '{render_cfg.bg_image}' -> full-RGB loss (w_alp forced 0)")
 
+    # fullres object-only composite colour: None/'black' = render's zero (black) bg, no
+    # composite; 'white' = composite over white; a path = composite over that image. Used
+    # to test whether the black uniform bg that fixes the fit is special vs any uniform bg.
+    bg_color = None
+    if fullres and render_cfg.bg_image not in (None, "scene", "black"):
+        if render_cfg.bg_image == "white":
+            bg_color = torch.ones(3, HW, HW, device="cuda")
+        else:
+            import imageio
+            raw = imageio.imread(render_cfg.bg_image)
+            t = torch.from_numpy(raw[..., :3]).float().permute(2, 0, 1) / 255.0
+            bg_color = torch.nn.functional.interpolate(
+                t.unsqueeze(0), size=(HW, HW), mode="bilinear", align_corners=False)[0].cuda()
+
     # ---- cameras + rendered GT frames ----
     views = ([v.strip() for v in render_cfg.cameras.split(",")] if render_cfg.cameras
              else [render_cfg.camera])
     pose_cams = {v: make_camera(0, torch.zeros(3, HW, HW),
                                 np.zeros((1, HW, HW), np.float32),
-                                fov=render_cfg.fov, view=v,
-                                pan=render_cfg.cam_pan) for v in views}
+                                fov=render_cfg.fov, view=v, pan=render_cfg.cam_pan,
+                                az=render_cfg.cam_az, el=render_cfg.cam_el,
+                                dist=render_cfg.cam_dist) for v in views}
     # 'scene' bg is rendered per view (depends on camera); cache it here
     bg_per_view = {}
     if not fullres and render_cfg.bg_image == "scene":
@@ -392,11 +519,13 @@ def setup_image_scene(scene: "SceneCfg", gt: "GTCfg", render_cfg: "RenderCfg",
         for vi, v in enumerate(views):
             bimg = bg_per_view.get(v)
             if fullres:
-                img, alp = render_drive_frame(gaussians, drive, pos, pipe, pose_cams[v])
+                img, alp = render_drive_frame(gaussians, drive, pos, pipe, pose_cams[v],
+                                              bg_image=bg_color)
             else:
                 img, alp = render_positions(pos, gaussians, pipe, pose_cams[v], bg_image=bimg)
             cam = make_camera(f, img.cpu(), alp.cpu().numpy(), fov=render_cfg.fov, view=v,
-                              pan=render_cfg.cam_pan)
+                              pan=render_cfg.cam_pan, az=render_cfg.cam_az,
+                              el=render_cfg.cam_el, dist=render_cfg.cam_dist)
             # our render is ALREADY alpha-composited; overwrite the gic Camera's
             # original_image (it would re-multiply by gt_alpha_mask -> a vs a^2).
             cam.original_image = img.clamp(0.0, 1.0).cuda()
@@ -414,13 +543,15 @@ def setup_image_scene(scene: "SceneCfg", gt: "GTCfg", render_cfg: "RenderCfg",
     if fullres:
         est.gauss_drive = drive            # render_forward drives gaussians from particles
         est.particle_xyz0 = xyz.detach()   # canonical particle positions (sim space)
+        if bg_color is not None:
+            est.bg_image = bg_color        # composite pred over the same uniform colour
     elif render_cfg.bg_image == "scene":
         est.bg_image = bg_per_view[views[0]]  # single-view bg for the loss composite
     elif bg_image is not None:
         est.bg_image = bg_image
     print(f"[img] GT rendered: {len(gt_roll)} frames x {len(views)} view(s) {views} "
           f"@{HW}^2; mode={'fullres' if fullres else 'pseudo'}, "
-          f"bg={'intrinsic' if fullres else ('on' if render_cfg.bg_image else 'off')}")
+          f"bg={('intrinsic' if render_cfg.bg_image else 'off (object-only)') if fullres else ('on' if render_cfg.bg_image else 'off')}")
 
     return dict(
         est=est, gaussians=gaussians, pipe=pipe, gt_roll=gt_roll, drive=drive,

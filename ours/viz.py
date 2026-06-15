@@ -350,13 +350,14 @@ def _to_np(x):
 
 
 def plot_E_gt_vs_pred(gt_logE, pred_logE, path, color=None, color_label="",
-                      title="") -> None:
+                      title="", cmap="magma") -> None:
     """Per-particle recovered vs GT log10 E scatter; diagonal y=x = perfect.
 
     Parametrization-free, so it handles MULTI-VALUED fields (e.g. circular E,
     where two strands at the same z carry different E) cleanly -- unlike a 1D
     profile along z. gt_logE/pred_logE: (M,) tensors or arrays; color: optional
-    (M,) hue (e.g. strain proxy or zt).
+    (M,) hue (e.g. strain proxy or zt). cmap: hue colormap -- NOT viridis, which
+    is reserved for E itself (here E is on the axes, the hue is a spatial coord).
     """
     import matplotlib
 
@@ -371,7 +372,7 @@ def plot_E_gt_vs_pred(gt_logE, pred_logE, path, color=None, color_label="",
     ax.plot([lo - pad, hi + pad], [lo - pad, hi + pad], color="0.5", ls="--",
             lw=1, label="y=x (perfect)", zorder=0)
     if color is not None:
-        sc = ax.scatter(g, p, c=_to_np(color), s=5, cmap="viridis", alpha=0.55)
+        sc = ax.scatter(g, p, c=_to_np(color), s=5, cmap=cmap, alpha=0.55)
         fig.colorbar(sc, label=color_label)
     else:
         ax.scatter(g, p, s=5, alpha=0.4, color="tab:blue")
