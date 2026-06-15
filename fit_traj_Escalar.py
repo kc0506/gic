@@ -141,6 +141,8 @@ def run(cfg: Config, rd: RunDir) -> None:
     if losses_vel:
         draw_curve(losses_vel, rd.root, name="loss_vel")
     plot_param_traj(e_s_phys, gt_E, cfg.gt.nu, rd.path("param_traj.png"))
+    from ours.imgloss import build_panel
+    build_panel(rd.root)
     print(f"[Escalar] DONE: GT E={gt_E:.3g} -> best E={best['Youngs modulus']:.3g} "
           f"(rel err {rel_err_E:.2%}), wall {time.time() - start:.0f}s -> {rd.root}")
 

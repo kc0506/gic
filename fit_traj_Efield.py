@@ -204,6 +204,8 @@ def run(cfg: Config, rd: RunDir) -> None:
                       rd.path("E_grid.png"))
     subprocess.run([sys.executable, "make_panel.py", "--per_run", "--runs", rd.root],
                    cwd=os.path.dirname(os.path.abspath(__file__)))
+    from ours.imgloss import build_panel
+    build_panel(rd.root)
     print(f"[Efield] DONE: logE err all {err_all:.3f} | observable-half {err_obs:.3f} "
           f"| strain-w {err_w:.3f}, wall {time.time()-t0:.0f}s -> {rd.root}")
 

@@ -194,6 +194,8 @@ def run(cfg: Config, rd: RunDir) -> None:
             plot_profile_1d(zt, v_best, gt_pf, rd.path("profile_1d.png"))
         print(f"[v0] FIELD per-axis |err| {ax_err_best.numpy().round(3).tolist()} | "
               f"xy relL2 {field_err_xy_traj[best_idx]:.2%} (all-axes {field_err_traj[best_idx]:.2%})")
+    from ours.imgloss import build_panel
+    build_panel(rd.root)
     print(f"[v0] DONE: GT v0={list(cfg.gt.vel)} -> {v0_est} (rel err {err:.2%}), "
           f"wall {time.time() - start:.0f}s -> {rd.root}")
 

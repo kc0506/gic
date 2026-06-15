@@ -62,7 +62,6 @@ def render_static_cols(run_dir: str, tag: str) -> list:
     # traj grid runs (efield / joint) pre-save all figures; image runs (incl
     # ours_image_joint_v0E) go through the generic curve path below.
     if ("efield" in scen or "joint" in scen) and "image" not in scen:
-        from PIL import Image
         return [Image.open(os.path.join(run_dir, f)).convert("RGB")
                 for f in PRESAVED_STATICS if os.path.exists(os.path.join(run_dir, f))]
     e_traj = r.get("E_traj")

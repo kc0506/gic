@@ -61,7 +61,7 @@ class Config:
     """v0 side: res='0' = scalar joint; else double field (v0-field + E-field)"""
     frames: FramesCfg = field(default_factory=FramesCfg)
     init_logE: float = 4.0
-    gt_kind: Literal["uniform", "ramp", "circular"] = "uniform"
+    gt_kind: Literal["uniform", "ramp", "circular", "step"] = "uniform"
     gt_ramp: Tuple[float, float] = (4.5, 5.5)
     obs: str = "ym"
     gt_v0_variant: Optional[str] = None
@@ -102,6 +102,9 @@ def run(cfg: Config, rd: RunDir) -> None:
         gt_field.set_uniform_(cfg.gt.logE)
     elif cfg.gt_kind == "ramp":
         gt_field.fill_ramp_(cfg.gt_ramp[0], cfg.gt_ramp[1], z_lo, z_hi, flip_z)
+    elif cfg.gt_kind == "step":
+        # gt_ramp = (soft_logE tip, stiff_logE stem); sharp transition near top-1/3
+        gt_field.fill_step_(cfg.gt_ramp[0], cfg.gt_ramp[1], z_lo, z_hi, flip_z)
     else:
         fill_circular_grid(gt_field, xyz.cpu(), free.cpu(), z_lo, z_hi,
                            cfg.gt_ramp[0], cfg.gt_ramp[1])
@@ -241,6 +244,8 @@ def run(cfg: Config, rd: RunDir) -> None:
                                aabb=aabb_c, res=res_v0, xyz_anchor=xyz_c[~fm])
     subprocess.run([sys.executable, "make_panel.py", "--per_run", "--runs", rd.root],
                    cwd=os.path.dirname(os.path.abspath(__file__)))
+    from ours.imgloss import build_panel
+    build_panel(rd.root)
     print(f"[joint] DONE: E obs-half {err_obs:.3f} | v0 rel {v0_rel:.2%}"
           + (f" (field xy {v0_field_relL2:.2%})" if field_v0 else "")
           + f", wall {time.time()-t0:.0f}s -> {rd.root}")
